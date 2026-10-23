@@ -8,26 +8,42 @@ import {
   HealthStatus,
 } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Backend API URL
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+).replace(/\/+$/, "");
 
+// Generate or retrieve the user's session ID
 function getClientSessionId(): string {
-  if (typeof window === "undefined") return "server-session";
+  if (typeof window === "undefined") {
+    return "server-session";
+  }
+
   try {
     let id = localStorage.getItem("digiguide_session_id");
+
     if (!id) {
       id = "sess_" + Math.random().toString(36).substring(2, 12);
       localStorage.setItem("digiguide_session_id", id);
     }
+
     return id;
   } catch {
     return "default-session";
   }
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+// Common API request handler
+async function fetchJson<T>(
+  url: string,
+  options?: RequestInit
+): Promise<T> {
+  const sessionId = getClientSessionId();
+
+  let response: Response;
+
   try {
-    const sessionId = getClientSessionId();
-    const res = await fetch(`${API_BASE}${url}`, {
+    response = await fetch(`${API_BASE}${url}`, {
       ...options,
       headers: {
         "Content-Type": "application/json",
@@ -35,91 +51,138 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
         ...options?.headers,
       },
     });
+  } catch (error) {
+    console.error(`Network error on ${url}:`, error);
 
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => ({ detail: "Unknown server error" }));
-      throw new Error(errorData.detail || `Request failed with status ${res.status}`);
-    }
-
-    return await res.json();
-  } catch (error: any) {
-    if (url !== "/health") {
-      console.warn(`API Error on ${url}:`, error?.message || error);
-    }
     throw new Error(
-      error?.message || "We could not connect to the guidance engine right now. Please check if the backend is running."
+      `Cannot connect to the backend at ${API_BASE}. Check that the backend is running and the API URL is correct.`
     );
   }
+
+  if (!response.ok) {
+    const errorData = await response
+      .json()
+      .catch(() => ({ detail: response.statusText }));
+
+    const message =
+      typeof errorData.detail === "string"
+        ? errorData.detail
+        : `Request failed with status ${response.status}`;
+
+    console.error(`API error on ${url}:`, response.status, message);
+
+    throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
 }
 
+// Check backend health
 export async function getHealth(): Promise<HealthStatus> {
   return fetchJson<HealthStatus>("/health");
 }
 
+// Get available guided tasks
 export async function getTaskCatalog(): Promise<TaskCatalogItem[]> {
-  return fetchJson<TaskCatalogItem[]>("/tasks/catalog");
+  const data = await fetchJson<TaskCatalogItem[]>("/tasks/catalog");
+
+  if (!Array.isArray(data)) {
+    throw new Error("The backend returned an invalid task catalog.");
+  }
+
+  return data;
 }
 
+// Get active tasks for the current session
 export async function getActiveTasks(): Promise<Task[]> {
   return fetchJson<Task[]>("/tasks/active");
 }
 
-export async function createTask(type: string, language: string = "en"): Promise<Task> {
+// Create a new guided task
+export async function createTask(
+  type: string,
+  language: string = "en"
+): Promise<Task> {
   return fetchJson<Task>("/tasks", {
     method: "POST",
     body: JSON.stringify({ type, language }),
   });
 }
 
+// Get a specific task
 export async function getTask(taskId: string): Promise<Task> {
-  return fetchJson<Task>(`/tasks/${taskId}`);
+  return fetchJson<Task>(`/tasks/${encodeURIComponent(taskId)}`);
 }
 
+// Advance to the next step
 export async function advanceStep(taskId: string): Promise<Task> {
-  return fetchJson<Task>(`/tasks/${taskId}/done`, {
-    method: "POST",
-  });
+  return fetchJson<Task>(
+    `/tasks/${encodeURIComponent(taskId)}/done`,
+    { method: "POST" }
+  );
 }
 
+// Return to the previous step
 export async function stepBack(taskId: string): Promise<Task> {
-  return fetchJson<Task>(`/tasks/${taskId}/back`, {
-    method: "POST",
-  });
+  return fetchJson<Task>(
+    `/tasks/${encodeURIComponent(taskId)}/back`,
+    { method: "POST" }
+  );
 }
 
+// Report that the user is stuck
 export async function reportStuck(
   taskId: string,
   reason: string,
   userNote?: string
 ): Promise<RecoveryResponse> {
-  return fetchJson<RecoveryResponse>(`/tasks/${taskId}/stuck`, {
-    method: "POST",
-    body: JSON.stringify({ reason, user_note: userNote }),
-  });
+  return fetchJson<RecoveryResponse>(
+    `/tasks/${encodeURIComponent(taskId)}/stuck`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        reason,
+        user_note: userNote,
+      }),
+    }
+  );
 }
 
+// Pause a task
 export async function pauseTask(taskId: string): Promise<Task> {
-  return fetchJson<Task>(`/tasks/${taskId}/pause`, {
-    method: "POST",
-  });
+  return fetchJson<Task>(
+    `/tasks/${encodeURIComponent(taskId)}/pause`,
+    { method: "POST" }
+  );
 }
 
+// Resume a task
 export async function resumeTask(taskId: string): Promise<Task> {
-  return fetchJson<Task>(`/tasks/${taskId}/resume`, {
-    method: "POST",
-  });
+  return fetchJson<Task>(
+    `/tasks/${encodeURIComponent(taskId)}/resume`,
+    { method: "POST" }
+  );
 }
 
+// Explain the current task step
 export async function explainStep(
   taskId: string,
   question?: string
 ): Promise<ExplainResponse> {
-  return fetchJson<ExplainResponse>(`/tasks/${taskId}/explain`, {
-    method: "POST",
-    body: JSON.stringify({ question }),
-  });
+  return fetchJson<ExplainResponse>(
+    `/tasks/${encodeURIComponent(taskId)}/explain`,
+    {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }
+  );
 }
 
+// Explain a message in simple language
 export async function explainMessage(
   message: string,
   language: string = "en"
@@ -130,6 +193,7 @@ export async function explainMessage(
   });
 }
 
+// Send a message to the voice assistant
 export async function sendAlexaMessage(
   userMessage: string,
   currentTaskId?: string,
@@ -145,6 +209,7 @@ export async function sendAlexaMessage(
   });
 }
 
+// Get voice assistant status
 export async function getAlexaStatus(): Promise<any> {
   return fetchJson<any>("/assistant/status");
 }
